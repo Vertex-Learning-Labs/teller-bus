@@ -1,0 +1,103 @@
+# Full TellerBus stack. From the repository root:
+#   docker compose up -d --build --wait
+# Teller.Api http://localhost:5112, MockHost http://localhost:5081, RabbitMQ UI http://localhost:15672
+#
+# The worker runs as two containers, one per lane, so reads and posts scale independently.
+# MockHost keeps its ledger inside the container: `docker compose down` resets balances to the seed accounts.
+
+x-rabbit-env: &rabbit-env
+  RabbitMq__Host: rabbitmq
+  RabbitMq__Username: guest
+  RabbitMq__Password: guest
+
+x-healthcheck: &healthcheck
+  interval: 5s
+  timeout: 5s
+  retries: 12
+  start_period: 10s
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      # The published port is not loopback inside the container, so guest would be refused.
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: -rabbit loopback_users []
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  mock-host:
+    build:
+      context: .
+      dockerfile: src/MockHost/Dockerfile
+    ports:
+      - "5081:8080"
+    environment:
+      MockHost__TimeoutAfterPostDelaySeconds: ${MOCK_HOST_TIMEOUT_AFTER_POST_SECONDS:-15}
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+
+  teller-worker-reads:
+    build:
+      context: .
+      dockerfile: src/Teller.Worker/Dockerfile
+    image: teller-bus/teller-worker
+    ports:
+      - "5082:8080"
+    environment:
+      <<: *rabbit-env
+      MockHost__BaseUrl: http://mock-host:8080
+      Worker__Lanes: Reads
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mock-host:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      # /health/ready includes MassTransit's bus check, so healthy means connected to RabbitMQ.
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/ready"]
+
+  teller-worker-posts:
+    image: teller-bus/teller-worker
+    ports:
+      - "5083:8080"
+    environment:
+      <<: *rabbit-env
+      MockHost__BaseUrl: http://mock-host:8080
+      Worker__Lanes: Posts
+    depends_on:
+      teller-worker-reads:
+        # Shares the image built by teller-worker-reads.
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      mock-host:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/ready"]
+
+  teller-api:
+    build:
+      context: .
+      dockerfile: src/Teller.Api/Dockerfile
+    ports:
+      - "5112:8080"
+    environment:
+      <<: *rabbit-env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]

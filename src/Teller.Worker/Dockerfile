@@ -1,0 +1,22 @@
+# Build from the repository root:
+# docker build -f src/Teller.Worker/Dockerfile -t teller-worker .
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+COPY src/Teller.Domain/Teller.Domain.csproj src/Teller.Domain/
+COPY src/Teller.Application/Teller.Application.csproj src/Teller.Application/
+COPY src/Teller.Infrastructure/Teller.Infrastructure.csproj src/Teller.Infrastructure/
+COPY src/Teller.Worker/Teller.Worker.csproj src/Teller.Worker/
+RUN dotnet restore src/Teller.Worker/Teller.Worker.csproj
+COPY src/Teller.Domain/ src/Teller.Domain/
+COPY src/Teller.Application/ src/Teller.Application/
+COPY src/Teller.Infrastructure/ src/Teller.Infrastructure/
+COPY src/Teller.Worker/ src/Teller.Worker/
+RUN dotnet publish src/Teller.Worker/Teller.Worker.csproj -c Release -o /app --no-restore /p:UseAppHost=false
+
+# Alpine ships busybox wget, which the compose health check uses.
+FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine
+WORKDIR /app
+COPY --from=build /app .
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "Teller.Worker.dll"]

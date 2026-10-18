@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/.DS_Store
+.git/
+tests/
+docs/
+# Local ledger state must not be baked into the image; each container starts from the seed accounts.
+src/MockHost/data/
