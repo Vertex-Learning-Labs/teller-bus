@@ -42,6 +42,9 @@ public sealed class Withdrawal
 
     public WithdrawalStatus Status { get; private set; }
 
+    /// <summary>Why the withdrawal was declined or needs review, in terms safe to show the teller.</summary>
+    public string? Reason { get; private set; }
+
     public bool Published { get; private set; }
 
     public static Withdrawal Accept(
@@ -82,20 +85,22 @@ public sealed class Withdrawal
 
     public void Post() => MoveTo(WithdrawalStatus.Posted, WithdrawalStatus.Processing);
 
-    public void Decline()
+    public void Decline(string? reason = null)
     {
         if (Status is not (WithdrawalStatus.Accepted or WithdrawalStatus.Processing))
             throw new InvalidOperationException($"Cannot decline a withdrawal that is {Status}.");
 
         Status = WithdrawalStatus.Declined;
+        Reason = reason;
     }
 
-    public void MarkNeedsReview()
+    public void MarkNeedsReview(string? reason = null)
     {
         if (Status is WithdrawalStatus.Posted or WithdrawalStatus.Declined)
             throw new InvalidOperationException($"Cannot review a withdrawal that is {Status}.");
 
         Status = WithdrawalStatus.NeedsReview;
+        Reason = reason;
     }
 
     private void MoveTo(WithdrawalStatus next, WithdrawalStatus required)

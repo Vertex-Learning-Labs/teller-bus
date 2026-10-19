@@ -9,6 +9,13 @@ public interface IWithdrawalRepository
     Withdrawal AddOrGet(Withdrawal withdrawal);
 }
 
+public interface IWithdrawalAuditLog
+{
+    void Record(Guid transactionId, string auditEvent, string? detail = null);
+
+    IReadOnlyList<WithdrawalAuditEntry> For(Guid transactionId);
+}
+
 public interface IWithdrawalPublisher
 {
     Task Publish(CashWithdrawalRequested command, CancellationToken cancellationToken = default);

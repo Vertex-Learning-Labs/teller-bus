@@ -14,6 +14,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<InMemoryWithdrawalRepository>();
 builder.Services.AddSingleton<IWithdrawalRepository>(sp => sp.GetRequiredService<InMemoryWithdrawalRepository>());
+builder.Services.AddSingleton<IWithdrawalAuditLog, InMemoryWithdrawalAuditLog>();
 builder.Services.AddSingleton<InMemoryBalanceInquiryRepository>();
 builder.Services.AddSingleton<IBalanceInquiryRepository>(sp => sp.GetRequiredService<InMemoryBalanceInquiryRepository>());
 builder.Services.AddSingleton<RecordWithdrawalOutcome>();

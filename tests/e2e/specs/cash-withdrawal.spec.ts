@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { accounts, balanceOf, newKey, settled, withdraw, Withdrawal } from '../support/teller';
+import { accounts, AuditTrail, balanceOf, newKey, settled, withdraw, Withdrawal } from '../support/teller';
 
 test.describe('cash withdrawal', () => {
   test('is accepted, posted by the host, and debits the balance', async ({ request }) => {
@@ -13,8 +13,11 @@ test.describe('cash withdrawal', () => {
     expect(response.headers()['location']).toBe(`/cash-withdrawals/${accepted.transactionId}`);
 
     const final = await settled(request, accepted.transactionId);
-    expect(final.status).toBe('Posted');
+    expect(final).toMatchObject({ status: 'Posted', reason: null });
     expect(await balanceOf(request, accounts.open)).toBeCloseTo(before - 12.5, 2);
+
+    const audit = (await (await request.get(`/cash-withdrawals/${accepted.transactionId}/audit`)).json()) as AuditTrail;
+    expect(audit.entries.map(entry => entry.event)).toEqual(['Accepted', 'Published', 'HostAnswered', 'Posted']);
   });
 
   test('retrying with the same key debits only once', async ({ request }) => {
@@ -47,26 +50,26 @@ test.describe('cash withdrawal', () => {
 
     const accepted = (await (await withdraw(request, { accountNumber: accounts.lowBalance, amount: before + 1_000 })).json()) as Withdrawal;
 
-    expect((await settled(request, accepted.transactionId)).status).toBe('Declined');
+    expect((await settled(request, accepted.transactionId))).toMatchObject({ status: 'Declined', reason: 'InsufficientFunds' });
     expect(await balanceOf(request, accounts.lowBalance)).toBeCloseTo(before, 2);
   });
 
   test('is declined for a closed account', async ({ request }) => {
     const accepted = (await (await withdraw(request, { accountNumber: accounts.closed, amount: 10 })).json()) as Withdrawal;
 
-    expect((await settled(request, accepted.transactionId)).status).toBe('Declined');
+    expect((await settled(request, accepted.transactionId))).toMatchObject({ status: 'Declined', reason: 'AccountClosed' });
   });
 
   test('is declined for an account the host does not know', async ({ request }) => {
     const accepted = (await (await withdraw(request, { accountNumber: accounts.unknown, amount: 10 })).json()) as Withdrawal;
 
-    expect((await settled(request, accepted.transactionId)).status).toBe('Declined');
+    expect((await settled(request, accepted.transactionId))).toMatchObject({ status: 'Declined', reason: 'AccountNotFound' });
   });
 
   test('is declined for a currency the account is not held in', async ({ request }) => {
     const accepted = (await (await withdraw(request, { accountNumber: accounts.open, amount: 10, currency: 'EUR' })).json()) as Withdrawal;
 
-    expect((await settled(request, accepted.transactionId)).status).toBe('Declined');
+    expect((await settled(request, accepted.transactionId))).toMatchObject({ status: 'Declined', reason: 'CurrencyMismatch' });
   });
 
   for (const [name, body] of [

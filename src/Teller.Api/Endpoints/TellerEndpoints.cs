@@ -12,6 +12,7 @@ public static class TellerEndpoints
         app.MapPost("/balance-inquiries", Inquire);
         app.MapPost("/cash-withdrawals", Withdraw);
         app.MapGet("/cash-withdrawals/{transactionId:guid}", GetWithdrawal);
+        app.MapGet("/cash-withdrawals/{transactionId:guid}/audit", GetWithdrawalAudit);
         return app;
     }
 
@@ -56,6 +57,18 @@ public static class TellerEndpoints
         return withdrawal is null
             ? Results.NotFound(new { title = "Withdrawal was not found.", transactionId })
             : Results.Ok(ToWithdrawalResponse(withdrawal, duplicate: false));
+    }
+
+    private static IResult GetWithdrawalAudit(Guid transactionId, GetCashWithdrawal withdrawals, IWithdrawalAuditLog audit)
+    {
+        if (withdrawals.Handle(transactionId) is null)
+            return Results.NotFound(new { title = "Withdrawal was not found.", transactionId });
+
+        return Results.Ok(new
+        {
+            transactionId,
+            entries = audit.For(transactionId).Select(entry => new { at = entry.At, @event = entry.Event, detail = entry.Detail })
+        });
     }
 
     private static bool TryCommand(
@@ -104,6 +117,7 @@ public static class TellerEndpoints
         tellerId = withdrawal.TellerId,
         branchId = withdrawal.BranchId,
         status = withdrawal.Status.ToString(),
+        reason = withdrawal.Reason,
         duplicate,
         requestedAt = withdrawal.RequestedAt
     };

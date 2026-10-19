@@ -11,7 +11,7 @@ public class RequestCashWithdrawalTests
     {
         var repository = new InMemoryWithdrawalRepository();
         var publisher = new FlakyPublisher(failures: 1);
-        var withdrawals = new RequestCashWithdrawal(repository, publisher, TimeProvider.System);
+        var withdrawals = new RequestCashWithdrawal(repository, publisher, new InMemoryWithdrawalAuditLog(TimeProvider.System), TimeProvider.System);
         var command = Command();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => withdrawals.Handle(command));
@@ -29,7 +29,7 @@ public class RequestCashWithdrawalTests
     {
         var repository = new InMemoryWithdrawalRepository();
         var publisher = new FlakyPublisher(failures: 0);
-        var withdrawals = new RequestCashWithdrawal(repository, publisher, TimeProvider.System);
+        var withdrawals = new RequestCashWithdrawal(repository, publisher, new InMemoryWithdrawalAuditLog(TimeProvider.System), TimeProvider.System);
         var command = Command();
 
         await withdrawals.Handle(command);
@@ -44,11 +44,11 @@ public class RequestCashWithdrawalTests
     {
         var repository = new InMemoryWithdrawalRepository();
         var publisher = new FlakyPublisher(failures: 1);
-        var withdrawals = new RequestCashWithdrawal(repository, publisher, TimeProvider.System);
+        var withdrawals = new RequestCashWithdrawal(repository, publisher, new InMemoryWithdrawalAuditLog(TimeProvider.System), TimeProvider.System);
         var command = Command();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => withdrawals.Handle(command));
-        new RecordWithdrawalOutcome(repository).Apply(command.TransactionId, RecordWithdrawalOutcome.Posted);
+        new RecordWithdrawalOutcome(repository, new InMemoryWithdrawalAuditLog(TimeProvider.System)).Apply(command.TransactionId, RecordWithdrawalOutcome.Posted);
         await withdrawals.Handle(command);
 
         Assert.Empty(publisher.Messages);
@@ -58,7 +58,7 @@ public class RequestCashWithdrawalTests
     public async Task Reusing_a_key_with_a_different_teller_is_a_payload_mismatch()
     {
         var repository = new InMemoryWithdrawalRepository();
-        var withdrawals = new RequestCashWithdrawal(repository, new FlakyPublisher(failures: 0), TimeProvider.System);
+        var withdrawals = new RequestCashWithdrawal(repository, new FlakyPublisher(failures: 0), new InMemoryWithdrawalAuditLog(TimeProvider.System), TimeProvider.System);
         var command = Command();
 
         await withdrawals.Handle(command);
@@ -67,6 +67,31 @@ public class RequestCashWithdrawalTests
 
         Assert.True(reused.PayloadMismatch);
         Assert.False(trimmed.PayloadMismatch);
+    }
+
+    [Fact]
+    public async Task The_audit_trail_records_a_failed_publish_and_the_retry_that_fixed_it()
+    {
+        var audit = new InMemoryWithdrawalAuditLog(TimeProvider.System);
+        var withdrawals = new RequestCashWithdrawal(new InMemoryWithdrawalRepository(), new FlakyPublisher(failures: 1), audit, TimeProvider.System);
+        var command = Command();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => withdrawals.Handle(command));
+        await withdrawals.Handle(command);
+        await withdrawals.Handle(command with { TellerId = "teller-2" });
+
+        var trail = audit.For(command.TransactionId);
+        Assert.Equal(
+            [
+                WithdrawalAuditEvents.Accepted,
+                WithdrawalAuditEvents.PublishFailed,
+                WithdrawalAuditEvents.Repeated,
+                WithdrawalAuditEvents.Published,
+                WithdrawalAuditEvents.KeyReused
+            ],
+            trail.Select(entry => entry.Event));
+        Assert.Equal("InvalidOperationException: Broker unavailable.", trail[1].Detail);
+        Assert.Contains("teller-2", trail[4].Detail);
     }
 
     private static CashWithdrawalCommand Command()

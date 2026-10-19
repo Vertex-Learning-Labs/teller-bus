@@ -32,7 +32,7 @@ public class WithdrawalTests
         withdrawal.Decline();
 
         Assert.Equal(WithdrawalStatus.Declined, withdrawal.Status);
-        Assert.Throws<InvalidOperationException>(withdrawal.MarkNeedsReview);
+        Assert.Throws<InvalidOperationException>(() => withdrawal.MarkNeedsReview());
     }
 
     private static Withdrawal Sample()

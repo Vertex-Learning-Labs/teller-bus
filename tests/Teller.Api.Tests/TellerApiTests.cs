@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Teller.Api.Adapters;
 using Teller.Api.Endpoints;
+using Teller.Application;
 
 namespace Teller.Api.Tests;
 
@@ -92,6 +93,30 @@ public class TellerApiTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task A_declined_withdrawal_shows_the_reason_and_its_audit_trail()
+    {
+        var id = Guid.NewGuid();
+
+        await PostWithdrawalAsync(id, 15m);
+        _factory.Services.GetRequiredService<RecordWithdrawalOutcome>()
+            .Apply(id, RecordWithdrawalOutcome.Declined, "InsufficientFunds");
+        var fetched = await _client.GetFromJsonAsync<WithdrawalBody>($"/cash-withdrawals/{id}");
+        var audit = await _client.GetFromJsonAsync<AuditBody>($"/cash-withdrawals/{id}/audit");
+
+        Assert.Equal("Declined", fetched!.Status);
+        Assert.Equal("InsufficientFunds", fetched.Reason);
+        Assert.Equal(["Accepted", "Published", "Declined"], audit!.Entries.Select(entry => entry.Event));
+    }
+
+    [Fact]
+    public async Task Audit_for_an_unknown_withdrawal_is_not_found()
+    {
+        var response = await _client.GetAsync($"/cash-withdrawals/{Guid.NewGuid()}/audit");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Missing_idempotency_key_is_rejected()
     {
         var response = await _client.PostAsJsonAsync("/cash-withdrawals", new
@@ -148,7 +173,12 @@ public class TellerApiTests : IClassFixture<WebApplicationFactory<Program>>
         decimal Amount,
         string Currency,
         string Status,
+        string? Reason,
         bool Duplicate);
+
+    private sealed record AuditBody(Guid TransactionId, List<AuditEntryBody> Entries);
+
+    private sealed record AuditEntryBody(DateTimeOffset At, string Event, string? Detail);
 
     private sealed record InquiryBody(
         Guid InquiryId,

@@ -19,4 +19,6 @@ public sealed record CashWithdrawalCompleted(
     string Outcome,
     string? Reason,
     decimal? AvailableBalance,
-    string? Currency);
+    string? Currency,
+    bool HostDuplicate = false,
+    int Attempt = 1);

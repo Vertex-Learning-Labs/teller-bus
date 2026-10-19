@@ -27,6 +27,30 @@ public sealed class InMemoryWithdrawalRepository : IWithdrawalRepository
     }
 }
 
+public sealed class InMemoryWithdrawalAuditLog(TimeProvider clock) : IWithdrawalAuditLog
+{
+    private readonly object _gate = new();
+    private readonly Dictionary<Guid, List<WithdrawalAuditEntry>> _entries = [];
+
+    public void Record(Guid transactionId, string auditEvent, string? detail = null)
+    {
+        var entry = new WithdrawalAuditEntry(transactionId, clock.GetUtcNow(), auditEvent, detail);
+        lock (_gate)
+        {
+            if (!_entries.TryGetValue(transactionId, out var trail))
+                _entries.Add(transactionId, trail = []);
+
+            trail.Add(entry);
+        }
+    }
+
+    public IReadOnlyList<WithdrawalAuditEntry> For(Guid transactionId)
+    {
+        lock (_gate)
+            return _entries.TryGetValue(transactionId, out var trail) ? trail.ToArray() : [];
+    }
+}
+
 public sealed class InMemoryBalanceInquiryRepository : IBalanceInquiryRepository
 {
     private readonly object _gate = new();

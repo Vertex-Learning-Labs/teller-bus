@@ -16,7 +16,13 @@ export type Withdrawal = {
   amount: number;
   currency: string;
   status: 'Accepted' | 'Processing' | 'Posted' | 'Declined' | 'NeedsReview';
+  reason: string | null;
   duplicate: boolean;
+};
+
+export type AuditTrail = {
+  transactionId: string;
+  entries: { at: string; event: string; detail: string | null }[];
 };
 
 export type Inquiry = {

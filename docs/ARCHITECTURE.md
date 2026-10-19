@@ -144,17 +144,17 @@ sequenceDiagram
         H-->>W: WithdrawalReceipt {Posted | Declined, duplicate?}
         W->>MQ: Publish CashWithdrawalCompleted
     else 404
-        W->>MQ: Publish CashWithdrawalCompleted (Declined, account-not-found)
+        W->>MQ: Publish CashWithdrawalCompleted (Declined, AccountNotFound)
     else retries exhausted
         MQ-->>MQ: MassTransit publishes Fault<CashWithdrawalRequested>
     end
 
     MQ->>API: teller-status
-    API->>R: RecordWithdrawalOutcome.Apply(txId, outcome)
+    API->>R: RecordWithdrawalOutcome.Apply(txId, outcome, reason)
 
     loop poll
         T->>API: GET /cash-withdrawals/{txId}
-        API-->>T: status: Accepted | Posted | Declined | NeedsReview
+        API-->>T: status: Accepted | Posted | Declined | NeedsReview, reason
     end
 ```
 
@@ -202,13 +202,35 @@ stateDiagram-v2
 
 `RecordWithdrawalOutcome` maps bus outcomes to transitions:
 
-| Incoming outcome | Effect |
-|---|---|
-| `Posted` | `Accepted → Processing → Posted` in one step |
-| `Declined` | `Accepted/Processing → Declined` |
-| anything else, or a `Fault` | `→ NeedsReview` unless already terminal |
+| Incoming outcome | Effect | `reason` shown to the teller |
+|---|---|---|
+| `Posted` | `Accepted → Processing → Posted` in one step | none |
+| `Declined` | `Accepted/Processing → Declined` | the host's code: `InsufficientFunds`, `AccountClosed`, `CurrencyMismatch`, or `AccountNotFound` (from the worker on a 404) |
+| a `Fault` | `→ NeedsReview` unless already terminal | `HostOutcomeUnknown` |
+| anything else | `→ NeedsReview` unless already terminal | `UnrecognizedHostOutcome` |
 
-Terminal states are never overwritten, so a late or duplicate message has no effect.
+Terminal states are never overwritten, so a late or duplicate message has no effect. It is still written to the audit trail as `OutcomeIgnored`.
+
+Only business reasons reach the teller. Exception text from a fault goes to the audit trail, because a teller cannot act on it and it can expose internals.
+
+There is one completion message (`CashWithdrawalCompleted`) with an `Outcome` field rather than separate succeeded and failed messages. Both outcomes go to the same consumer and the same state machine, so a second message type would add a binding and a consumer without changing any behaviour. Crashes are already covered by MassTransit's `Fault<CashWithdrawalRequested>`. A separate failure event is worth adding only when another service needs to subscribe to failures alone, for example alerting.
+
+### 3.4 Audit trail
+
+Teller.Api keeps an append-only trail per withdrawal (`IWithdrawalAuditLog`, in memory for now) and serves it at `GET /cash-withdrawals/{id}/audit`.
+
+| Event | Recorded by | Detail |
+|---|---|---|
+| `Accepted` | `RequestCashWithdrawal` | amount, currency, account, teller, branch |
+| `Repeated` | `RequestCashWithdrawal` | same key and payload again, with the status at that moment |
+| `KeyReused` | `RequestCashWithdrawal` | the rejected payload (the 422 case) |
+| `Published` / `PublishFailed` | `RequestCashWithdrawal` | the broker exception on failure |
+| `HostAnswered` | `WithdrawalStatusConsumer` | outcome, reason, available balance, worker attempt number, whether the host replayed an earlier receipt |
+| `HostFaulted` | `WithdrawalFaultConsumer` | exception type and message from `Fault<CashWithdrawalRequested>` |
+| `Posted` / `Declined` / `NeedsReview` | `RecordWithdrawalOutcome` | the teller-facing reason |
+| `OutcomeIgnored` | `RecordWithdrawalOutcome` | an outcome that arrived after the withdrawal was already terminal |
+
+The worker has no store of its own. What it knows about the host call (attempt number, host duplicate flag) travels on `CashWithdrawalCompleted`, and its final failure travels on the `Fault`, so the whole trail can be read in one place.
 
 ---
 
@@ -427,7 +449,27 @@ The response is `202 Accepted` with `Location: /cash-withdrawals/{transactionId}
 curl -s http://localhost:5112/cash-withdrawals/3fa85f64-5717-4562-b3fc-2c963f66afa7
 ```
 
-`status` is one of `Accepted`, `Processing`, `Posted`, `Declined` or `NeedsReview`.
+`status` is one of `Accepted`, `Processing`, `Posted`, `Declined` or `NeedsReview`. For `Declined` and `NeedsReview`, `reason` says why (see 3.3); otherwise it is `null`.
+
+### Audit trail
+
+```bash
+curl -s http://localhost:5112/cash-withdrawals/3fa85f64-5717-4562-b3fc-2c963f66afa7/audit
+```
+
+```json
+{
+  "transactionId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
+  "entries": [
+    { "at": "…", "event": "Accepted", "detail": "100.00 USD from 1001001001 by teller T-17 at branch BR-001" },
+    { "at": "…", "event": "Published", "detail": null },
+    { "at": "…", "event": "HostAnswered", "detail": "Posted, available 2400.00 USD, worker attempt 1." },
+    { "at": "…", "event": "Posted", "detail": null }
+  ]
+}
+```
+
+Returns 404 for a transaction that was never submitted.
 
 ### Validation rules
 
@@ -519,6 +561,7 @@ Details are in the code review that accompanies this document.
 
 1. **No transactional outbox.** A withdrawal is stored before it is published. If the publish fails, the client gets a 500, and a **retry with the same key publishes it again** (`Withdrawal.Published`). A withdrawal whose client never retries still stays `Accepted`. A durable outbox (for example the MassTransit EF Core outbox) together with a real database would close that gap.
 2. **In-memory Teller state.** Restarting Teller.Api loses all withdrawals. With more than one Api instance, `teller-status` outcomes land on a random instance and are dropped if that instance does not hold the withdrawal.
-3. **Decline reason and balance are discarded.** `CashWithdrawalCompleted.Reason` and `AvailableBalance` never reach the teller.
+3. **Available balance is not returned to the teller.** The decline reason is, but `CashWithdrawalCompleted.AvailableBalance` only appears in the audit trail.
+6. **The audit trail is in memory.** It is lost on restart like the withdrawals, and has no retention limit. It belongs in the same database as the withdrawals once there is one.
 4. **No authentication.** `tellerId` and `branchId` are taken from the request body.
 5. `Teller.Infrastructure` is an empty project, and `TellerDesk` is unused.

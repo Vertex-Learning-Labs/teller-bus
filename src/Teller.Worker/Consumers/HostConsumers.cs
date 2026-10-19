@@ -39,6 +39,8 @@ public sealed class CashWithdrawalConsumer(CoreHostClient host, ILogger<CashWith
             receipt.Outcome,
             receipt.Reason,
             receipt.AvailableBalance,
-            receipt.Currency));
+            receipt.Currency,
+            receipt.Duplicate,
+            context.GetRetryAttempt() + 1));
     }
 }

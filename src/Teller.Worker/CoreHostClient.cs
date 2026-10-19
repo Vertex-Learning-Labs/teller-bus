@@ -52,7 +52,7 @@ public sealed class CoreHostClient(HttpClient http)
             cancellationToken);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
-            return new HostWithdrawal("Declined", "account-not-found", 0, currency, false);
+            return new HostWithdrawal("Declined", "AccountNotFound", 0, currency, false);
 
         if (!response.IsSuccessStatusCode)
             throw new CoreHostUnavailableException((int)response.StatusCode, $"Withdrawal returned {(int)response.StatusCode}.");

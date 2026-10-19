@@ -11,7 +11,11 @@ public sealed record CashWithdrawalCommand(
 
 public sealed record CashWithdrawalOutcome(Withdrawal Withdrawal, bool Duplicate, bool PayloadMismatch = false);
 
-public sealed class RequestCashWithdrawal(IWithdrawalRepository repository, IWithdrawalPublisher publisher, TimeProvider clock)
+public sealed class RequestCashWithdrawal(
+    IWithdrawalRepository repository,
+    IWithdrawalPublisher publisher,
+    IWithdrawalAuditLog audit,
+    TimeProvider clock)
 {
     public async Task<CashWithdrawalOutcome> Handle(CashWithdrawalCommand command, CancellationToken cancellationToken = default)
     {
@@ -29,10 +33,18 @@ public sealed class RequestCashWithdrawal(IWithdrawalRepository repository, IWit
 
             stored = repository.AddOrGet(withdrawal);
             duplicate = !ReferenceEquals(stored, withdrawal);
+            if (!duplicate)
+                audit.Record(stored.TransactionId, WithdrawalAuditEvents.Accepted, Describe(command));
         }
 
         if (!stored.Matches(command.AccountNumber, command.Amount, command.TellerId, command.BranchId))
+        {
+            audit.Record(stored.TransactionId, WithdrawalAuditEvents.KeyReused, $"Rejected a different request: {Describe(command)}");
             return new CashWithdrawalOutcome(stored, Duplicate: true, PayloadMismatch: true);
+        }
+
+        if (duplicate)
+            audit.Record(stored.TransactionId, WithdrawalAuditEvents.Repeated, $"Same request again while {stored.Status}.");
 
         // A withdrawal is stored before it is published. If an earlier publish failed, a retry with the
         // same key publishes it again; the host dedupes on TransactionId, so a second copy is harmless.
@@ -44,15 +56,28 @@ public sealed class RequestCashWithdrawal(IWithdrawalRepository repository, IWit
 
     private async Task Publish(Withdrawal withdrawal, CancellationToken cancellationToken)
     {
-        await publisher.Publish(new CashWithdrawalRequested(
-            withdrawal.TransactionId,
-            withdrawal.AccountNumber.Value,
-            withdrawal.Amount.Amount,
-            withdrawal.Amount.Currency,
-            withdrawal.TellerId,
-            withdrawal.BranchId,
-            withdrawal.RequestedAt), cancellationToken);
+        try
+        {
+            await publisher.Publish(new CashWithdrawalRequested(
+                withdrawal.TransactionId,
+                withdrawal.AccountNumber.Value,
+                withdrawal.Amount.Amount,
+                withdrawal.Amount.Currency,
+                withdrawal.TellerId,
+                withdrawal.BranchId,
+                withdrawal.RequestedAt), cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            audit.Record(withdrawal.TransactionId, WithdrawalAuditEvents.PublishFailed, $"{exception.GetType().Name}: {exception.Message}");
+            throw;
+        }
 
         withdrawal.MarkPublished();
+        audit.Record(withdrawal.TransactionId, WithdrawalAuditEvents.Published);
     }
+
+    private static string Describe(CashWithdrawalCommand command) =>
+        FormattableString.Invariant($"{command.Amount.Amount} {command.Amount.Currency}")
+        + $" from {command.AccountNumber} by teller {command.TellerId.Trim()} at branch {command.BranchId.Trim()}";
 }

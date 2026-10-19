@@ -27,7 +27,7 @@ test.describe('host outage @chaos', () => {
 
     // HTTP retries, then bus retries at 1 s and 5 s, then MassTransit publishes Fault<CashWithdrawalRequested>.
     const final = await settled(request, accepted.transactionId, 45_000);
-    expect(final.status).toBe('NeedsReview');
+    expect(final).toMatchObject({ status: 'NeedsReview', reason: 'HostOutcomeUnknown' });
   });
 
   test('withdrawals post again once the host is back', async ({ request }) => {
